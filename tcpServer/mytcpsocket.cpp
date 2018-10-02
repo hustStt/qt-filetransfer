@@ -4,20 +4,36 @@ MyTcpSocket::MyTcpSocket()
 {
     command_socket = new QTcpSocket();
     file_socket = new QTcpSocket();
+    tcpServer_c = new QTcpServer();
+    tcpServer_f = new QTcpServer();
+
+    tcpServer_c->listen(QHostAddress::Any,PORT1);
+    tcpServer_f->listen(QHostAddress::Any,PORT2);
+
+    connect(tcpServer_c,SIGNAL(newConnection()),this,SLOT(on_connect_c()));
+    connect(tcpServer_f,SIGNAL(newConnection()),this,SLOT(on_connect_f()));
 }
 
-void MyTcpSocket::connect_to_server(){
-    command_socket->connectToHost(QHostAddress(IP),PORT1);
-    file_socket->connectToHost(QHostAddress(IP),PORT2);
-    connect(command_socket,SIGNAL(readyRead()),this,SLOT(on_read_command()));
-    connect(file_socket,SIGNAL(readyRead()),this,SLOT(on_read_file()));
-}
+void MyTcpSocket::on_connect_c(){
+    command_socket = tcpServer_c->nextPendingConnection();
 
-void MyTcpSocket::dis_connect(){
+    QString ip = command_socket->peerAddress().toString();
+    quint16 port = command_socket->peerPort();
+
+    qDebug()<<QString("[%1:%2]成功连接").arg(ip).arg(port);
     command_socket->disconnect();
-    command_socket->close();
+    connect(command_socket,SIGNAL(readyRead()),this,SLOT(on_read_command()));
+}
+
+void MyTcpSocket::on_connect_f(){
+    file_socket = tcpServer_f->nextPendingConnection();
+
+    QString ip = file_socket->peerAddress().toString();
+    quint16 port = file_socket->peerPort();
+
+    qDebug()<<QString("[%1:%2]成功连接").arg(ip).arg(port);
     file_socket->disconnect();
-    file_socket->close();
+    connect(file_socket,SIGNAL(readyRead()),this,SLOT(on_read_file()));
 }
 
 void MyTcpSocket::set_file(QString filePath){
@@ -30,9 +46,6 @@ void MyTcpSocket::set_file(QString filePath){
     filesize = info.size();
     sendSize = 0;
 
-    if(file.isOpen()){
-        file.close();
-    }
     file.setFileName(filePath);
     bool isOk = file.open(QIODevice::ReadOnly);
     if(false == isOk)
@@ -51,11 +64,11 @@ void MyTcpSocket::send_command(){
     }
 }
 
-void MyTcpSocket::send_download_command(){
-    QString str = QString("%1##%2").arg(FILE_DOWN_LOAD).arg(filename);
-    qint64 len = command_socket->write(str.toUtf8());
+void MyTcpSocket::send_command(int code,QString str){
+    QString head = QString("%1##%2").arg(code).arg(str);
+    qint64 len = command_socket->write(head.toUtf8());
     if(len <= 0){
-        qDebug()<<ERROR_CODE_111;
+        qDebug()<<"命令发送失败"<<code;
     }
 }
 
@@ -85,18 +98,15 @@ void MyTcpSocket::send_file(){
 void MyTcpSocket::on_read_command(){
     QByteArray buf = command_socket->readAll();
     qDebug()<<buf;
-    int code = QString(buf).section("##",0,0).toInt();
-    QString end = QString(buf).section("##",1,1);
-    bool isOk;
 
-    switch(code){
-    case FILE_CODE:
+    int code = QString(buf).section("##",0,0).toInt();
+    if(code == FILE_CODE){
         filename = QString(buf).section("##",1,1);
         filesize = QString(buf).section("##",2,2).toInt();
         recvSize = 0;
 
         file.setFileName(filename);
-        isOk = file.open(QIODevice::WriteOnly);
+        bool isOk = file.open(QIODevice::WriteOnly);
         if(false == isOk)
         {
             qDebug()<<"writeonly error 49";
@@ -105,40 +115,11 @@ void MyTcpSocket::on_read_command(){
             return;
         }
         qDebug()<<QString("文件名：%1\n大小:%2 kb").arg(filename).arg(filesize/1024);
-        break;
-    case FILE_HEAD_REC_CODE:
-        if(end == "ok"){
-            send_file();
-        } else if(end == "error") {
-            qDebug()<<"文件头接收失败";
-        }
-        break;
-    case FILE_REC_CODE:
-        if(end == "error"){
-            qDebug()<<"文件接收失败";
-        } else if(end == "ok"){
-            qDebug()<<"文件接收成功";
-        }
-        break;
-    case UNZIP_CODE:
-        if(end == "error"){
-            qDebug()<<"解压失败";
-        } else if(end == "ok"){
-            qDebug()<<"解压成功";
-        }
-        break;
-    case COMPILE_CODE:
-        if(end == "error"){
-            qDebug()<<"编译失败";
-        } else if(end == "ok"){
-            qDebug()<<"编译成功";
-            send_download_command();
-        }
-        break;
-    default:
-        break;
+        send_command(FILE_HEAD_REC_CODE,"ok");
     }
-
+    if(code == FILE_DOWN_LOAD){
+        send_file();
+    }
 }
 
 void MyTcpSocket::on_read_file(){
@@ -156,6 +137,7 @@ void MyTcpSocket::on_read_file(){
     {
         file.close();
         //QMessageBox::information(this,"完成","文件接收完成");
+        send_command(FILE_REC_CODE,"ok");
         file_socket->disconnectFromHost();
         file_socket->close();
     }
